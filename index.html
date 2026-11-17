@@ -102,6 +102,12 @@ th{color:#666;font-weight:500;}
 .start-btn{width:100%;padding:16px;border:none;border-radius:12px;background:#4169e1;color:#fff;font-size:17px;font-weight:600;letter-spacing:.02em;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
 .start-btn svg{width:16px;height:16px;}
 .intro-foot{text-align:center;margin-top:16px;font-size:12px;color:#a6abb8;line-height:1.7;}
+.replay-tip{display:none;font-size:12px;color:rgba(255,255,255,.9);margin-top:10px;line-height:1.7;}
+.img-overlay{position:fixed;inset:0;background:rgba(18,20,26,.94);z-index:999;display:none;flex-direction:column;align-items:center;padding:18px 14px 28px;overflow-y:auto;}
+.img-overlay.show{display:flex;}
+.img-overlay .ov-tip{color:#fff;font-size:14px;line-height:1.8;text-align:center;margin-bottom:14px;}
+.img-overlay img{width:100%;max-width:720px;border-radius:10px;background:#fff;display:block;}
+.img-overlay .ov-btn{margin-top:18px;padding:11px 34px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;font-size:15px;flex:none;}
 @media (max-width:400px){
   body{padding:12px;}
   .card{padding:18px;}
@@ -187,6 +193,7 @@ th{color:#666;font-weight:500;}
 <div class="heart">&#9829;</div>
 <h1>SCL-90 心理健康测评报告</h1>
 <div class="time" id="report-time"></div>
+<div class="replay-tip" id="replayTip">以下是你上次作答的存档结果，可直接查看或下载图片</div>
 </div>
 
 <div class="card">
@@ -239,6 +246,12 @@ th{color:#666;font-weight:500;}
 <div class="used-info" id="used-info"></div>
 <div class="used-tip" style="font-size:13px;color:#999;">如确需重新测评（例如同一设备需更换测试人），连续点击上方标题 5 次即可重置。</div>
 </div>
+</div>
+
+<div class="img-overlay" id="imgOverlay">
+<div class="ov-tip">长按下方图片保存到相册<br>如长按无反应，可直接用手机截屏保存</div>
+<img id="reportImg" alt="SCL-90 测评报告">
+<button class="ov-btn" onclick="closeOverlay()">关闭</button>
 </div>
 
 <script>
@@ -299,13 +312,43 @@ const submitBtn = document.getElementById('btn-submit');
 const radioList = document.querySelectorAll('input[name="ans"]');
 const downloadBtn = document.getElementById('downloadBtn');
 
+function isWeChat(){ return /MicroMessenger/i.test(navigator.userAgent); }
+function isMobile(){ return /Android|iPhone|iPad|iPod|HarmonyOS/i.test(navigator.userAgent); }
+function showPreview(dataUrl){
+    const box = document.getElementById("imgOverlay");
+    document.getElementById("reportImg").src = dataUrl;
+    box.classList.add("show");
+    document.body.style.overflow = "hidden";
+}
+function closeOverlay(){
+    document.getElementById("imgOverlay").classList.remove("show");
+    document.body.style.overflow = "";
+}
 downloadBtn.onclick = async function(){
     const reportDom = document.getElementById("report-content");
-    const canvas = await html2canvas(reportDom,{scale:2,backgroundColor:"#f5f6f8"});
-    const link = document.createElement("a");
-    link.href = canvas.toDataURL("image/png");
-    link.download = "SCL90测评报告.png";
-    link.click();
+    const scale = isMobile() ? 1.5 : 2;
+    let canvas;
+    try{
+        canvas = await html2canvas(reportDom,{scale:scale,backgroundColor:"#ffffff",useCORS:true,logging:false});
+    }catch(e){
+        alert("生成图片失败，请直接用手机截屏保存报告。");
+        return;
+    }
+    const dataUrl = canvas.toDataURL("image/png");
+    if(isWeChat() || isMobile()){
+        showPreview(dataUrl);
+        return;
+    }
+    try{
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = "SCL90测评报告.png";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }catch(e){
+        showPreview(dataUrl);
+    }
 }
 
 function getRecord(){
@@ -368,37 +411,39 @@ function prevQuestion(){
     current--;
     renderQuestion();
 }
-function submitTest(){
-    const selected = document.querySelector('input[name="ans"]:checked');
-    if(!selected){alert("请选择本道题答案！");return;}
-    answers[current] = Number(selected.value);
-
+function calcAll(ansArr){
     let allScore = 0;
     const factorResult = {};
     factorList.forEach(function(f){ factorResult[f[0]] = {sum:0, count:f[1].length}; });
     for(let i=0;i<90;i++){
-        const s = answers[i];
+        const s = ansArr[i];
         allScore += s;
         factorList.forEach(function(f){
             if(f[1].indexOf(i+1) > -1) factorResult[f[0]].sum += s;
         });
     }
+    return { allScore: allScore, factorResult: factorResult };
+}
+function levelOf(allScore){
+    if(allScore<160){return {levelText:"正常", levelTip:"基本无明显困扰", desc:"总分偏低，近期心理状态整体平稳，没有明显的痛苦感受。"};}
+    if(allScore<200){return {levelText:"轻度", levelTip:"轻微困扰", desc:"总分偏高，有一些轻微心理困扰，大多不影响正常生活，可以自我调节观察。"};}
+    if(allScore<250){return {levelText:"中度", levelTip:"困扰比较明显", desc:"总分偏高，近期心理困扰较为明显，部分情绪、身体感受会影响日常状态，建议多留意。"};}
+    return {levelText:"重度", levelTip:"困扰很明显", desc:"总分较高，近期心理困扰突出，明显影响生活、睡眠、情绪，强烈建议寻求专业心理帮助。"};
+}
+function renderReport(ansArr, timeStr, isReplay){
+    const r = calcAll(ansArr);
+    const lv = levelOf(r.allScore);
+    document.getElementById("page-intro").classList.remove("active");
     document.getElementById("page-test").classList.remove("active");
+    document.getElementById("page-used").classList.remove("active");
     document.getElementById("page-report").classList.add("active");
-    const now = new Date();
-    const timeStr = now.getFullYear()+"年"+(now.getMonth()+1)+"月"+now.getDate()+"日 "+now.getHours().toString().padStart(2,'0')+":"+now.getMinutes().toString().padStart(2,'0');
-    document.getElementById("report-time").innerText = "测评完成时间：" + timeStr;
-    document.getElementById("total-score-val").innerText = allScore;
-    let levelText, levelTip, desc;
-    if(allScore<160){levelText="正常";levelTip="基本无明显困扰";desc="总分偏低，近期心理状态整体平稳，没有明显的痛苦感受。";}
-    else if(allScore<200){levelText="轻度";levelTip="轻微困扰";desc="总分偏高，有一些轻微心理困扰，大多不影响正常生活，可以自我调节观察。";}
-    else if(allScore<250){levelText="中度";levelTip="困扰比较明显";desc="总分偏高，近期心理困扰较为明显，部分情绪、身体感受会影响日常状态，建议多留意。";}
-    else{levelText="重度";levelTip="困扰很明显";desc="总分较高，近期心理困扰突出，明显影响生活、睡眠、情绪，强烈建议寻求专业心理帮助。";}
-    document.getElementById("total-level").innerText = levelText;
-    document.getElementById("total-tip").innerText = levelTip;
-    document.getElementById("total-desc").innerText = desc;
 
-    saveRecord({ time: timeStr, total: allScore, level: levelText });
+    document.getElementById("report-time").innerText = "测评完成时间：" + timeStr;
+    document.getElementById("total-score-val").innerText = r.allScore;
+    document.getElementById("total-level").innerText = lv.levelText;
+    document.getElementById("total-tip").innerText = lv.levelTip;
+    document.getElementById("total-desc").innerText = lv.desc;
+    document.getElementById("replayTip").style.display = isReplay ? "block" : "none";
 
     const tb = document.getElementById("factor-table");
     tb.innerHTML = "";
@@ -406,8 +451,8 @@ function submitTest(){
     const radarLabels = [];
     const radarData = [];
     factorList.forEach(function(item){
-        const fname = item[0], idxs = item[1];
-        const d = factorResult[fname];
+        const fname = item[0];
+        const d = r.factorResult[fname];
         const avg = (d.sum / d.count).toFixed(2);
         radarLabels.push(fname);
         radarData.push(Number(avg));
@@ -458,6 +503,18 @@ function submitTest(){
             plugins:{ legend:{ display:false } }
         }
     });
+    return { allScore: r.allScore, level: lv.levelText };
+}
+function submitTest(){
+    const selected = document.querySelector('input[name="ans"]:checked');
+    if(!selected){alert("请选择本道题答案！");return;}
+    answers[current] = Number(selected.value);
+
+    const now = new Date();
+    const timeStr = now.getFullYear()+"年"+(now.getMonth()+1)+"月"+now.getDate()+"日 "+now.getHours().toString().padStart(2,'0')+":"+now.getMinutes().toString().padStart(2,'0');
+
+    const res = renderReport(answers, timeStr, false);
+    saveRecord({ time: timeStr, total: res.allScore, level: res.level, answers: answers.slice() });
 }
 
 function startTest(){
@@ -468,9 +525,10 @@ function startTest(){
 
 (function init(){
     const rec = getRecord();
-    if(rec){
-        showUsedPage(rec);
+    if(rec && rec.answers && rec.answers.length === 90){
+        renderReport(rec.answers, rec.time, true);
     }else{
+        if(rec) clearRecord();
         renderQuestion();
         document.getElementById('page-intro').classList.add('active');
     }
